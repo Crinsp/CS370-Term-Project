@@ -1,0 +1,24 @@
+name: Deploy to Pi
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, pi]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync to /srv/cs370
+        run: rsync -a --delete --exclude .git ./ /srv/cs370/
+
+      - name: Run deploy script
+        run: |
+          cd /srv/cs370
+          if [ -x deploy.sh ]; then ./deploy.sh; else echo "no deploy.sh yet, files synced only"; fi
