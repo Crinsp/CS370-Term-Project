@@ -1,0 +1,1 @@
+# Dependencies needed everywhere (PCs and the Pi). Add app libraries here.

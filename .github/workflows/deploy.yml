@@ -1,8 +1,10 @@
 name: Deploy to Pi
 
+# Only published releases deploy. Merging to main does NOT touch the Pi.
+# To redeploy an older version: Actions -> Deploy to Pi -> Run workflow, and pick its tag.
 on:
-  push:
-    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 concurrency:
@@ -12,7 +14,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: [self-hosted, pi]
+    # Pre-releases don't deploy, so you can publish one without touching the Pi.
+    if: github.event_name != 'release' || !github.event.release.prerelease
     steps:
+      # On a release this checks out the release's tag, not the tip of main.
       - uses: actions/checkout@v4
 
       - name: Sync to /srv/cs370
