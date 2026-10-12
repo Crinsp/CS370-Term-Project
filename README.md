@@ -2,7 +2,28 @@
 
 Raspberry Pi 4 environment monitor: a TSL2591 light sensor and a DHT11 temperature/humidity sensor.
 
-## Workflow
+## How we work (the short version)
+
+```
+your PC                    GitHub                         the Pi
+───────                    ──────                         ──────
+code on a branch  ──push──▶ Pull Request
+(fake sensors)              │  tests run automatically
+                            │  partner reviews + approves
+                            ▼
+                           main  (merging does NOT deploy)
+                            │
+                            │  when we're happy with main:
+                            ▼
+                           Release v0.x.0  ───────────▶  runner deploys it
+                                                          to /srv/cs370
+```
+
+- **Everyday coding happens on your own PC.** You don't need the Pi, because the code fakes the sensor readings when it's not running on one.
+- **The Pi is only for testing with the real sensors.** Each of us has our own copy of the repo there, so we don't overwrite each other's work.
+- **Nothing reaches the "live" Pi until we publish a release.** Merging into `main` is safe, and we decide together when to cut a release.
+
+## Workflow (step by step)
 
 1. Branch off `main`: `git switch -c my-feature`
 2. Develop on your own PC. The code automatically uses **fake sensors** when it isn't on a Pi.
