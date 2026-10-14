@@ -4,3 +4,5 @@ __pycache__/
 VERSION
 partners/*/transcripts/*
 !partners/*/transcripts/.gitkeep
+build/
+build-asan/

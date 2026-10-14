@@ -6,6 +6,7 @@ See README.md for the full workflow. Key points:
 - Access sensors only through `sensors.get_sensors()`. Off the Pi it returns fake readings, so the code runs anywhere.
 - Hardware libraries (`adafruit-*`) go in `requirements-pi.txt` only; everything else goes in `requirements.txt`.
 - Run tests with `python -m unittest discover -s tests`.
+- C core: `make` builds to `build/`, `make test` runs `tests/c/`, `make asan` reruns them under ASan+UBSan. Sources live in `src/<component>/main.c`; shared code in `src/common/`.
 - On the Pi: never edit `/srv/cs370` (it's the deployed release). Use a personal checkout under `~/dev/<name>`. Only one process can use the DHT11 (GPIO4) at a time.
 
 ## Hard constraints (graded; team law)
