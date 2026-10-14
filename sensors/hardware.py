@@ -12,13 +12,14 @@ import adafruit_tsl2591
 import board
 import busio
 
+from .backend import SensorBackend
 from .reading import Reading
 
 DHT_PIN = int(os.environ.get("CS370_DHT_PIN", "4"))
 DHT_MODEL = os.environ.get("CS370_DHT_MODEL", "11")
 
 
-class HardwareSensors:
+class HardwareSensors(SensorBackend):
     def __init__(self):
         self._tsl = adafruit_tsl2591.TSL2591(busio.I2C(board.SCL, board.SDA))
         dht_cls = adafruit_dht.DHT22 if DHT_MODEL == "22" else adafruit_dht.DHT11
@@ -37,9 +38,3 @@ class HardwareSensors:
 
     def close(self) -> None:
         self._dht.exit()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
