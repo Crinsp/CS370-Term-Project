@@ -1,0 +1,56 @@
+name: Claude Review
+
+# Reviews every pull request against CLAUDE.md and posts a comment. The check
+# goes red when Claude finds a blocking issue; fix it and push to re-run.
+# Needs the ANTHROPIC_API_KEY repo secret and the Claude GitHub app (/install-github-app).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. Read CLAUDE.md first; its hard constraints and
+            style rules are the standard. Check the diff for:
+            1. Correctness bugs and unhandled error paths.
+            2. Violations of CLAUDE.md (network calls, actuator code, fake data not
+               labeled, unchecked allocations/syscalls, weakened or deleted tests).
+            3. Code that is hard to read: unclear names, magic numbers, long functions.
+            4. Missing tests for new behavior.
+
+            Post one summary comment on the PR with `gh pr comment`, listing findings
+            by file and line, most severe first. Mark an issue as blocking only if it
+            is a real bug or a CLAUDE.md violation; style notes are never blocking.
+            Do not edit any files.
+          claude_args: |
+            --allowedTools "Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*)"
+            --max-turns 15
+            --json-schema '{"type":"object","properties":{"has_blocking_issues":{"type":"boolean"},"summary":{"type":"string"}},"required":["has_blocking_issues","summary"]}'
+
+      - name: Fail the check on blocking issues
+        if: fromJSON(steps.review.outputs.structured_output).has_blocking_issues == true
+        run: |
+          echo "Claude found blocking issues. See the PR comment."
+          exit 1
