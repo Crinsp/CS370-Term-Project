@@ -50,7 +50,15 @@ jobs:
             --json-schema '{"type":"object","properties":{"has_blocking_issues":{"type":"boolean"},"summary":{"type":"string"}},"required":["has_blocking_issues","summary"]}'
 
       - name: Fail the check on blocking issues
-        if: fromJSON(steps.review.outputs.structured_output).has_blocking_issues == true
+        env:
+          VERDICT: ${{ steps.review.outputs.structured_output }}
         run: |
-          echo "Claude found blocking issues. See the PR comment."
-          exit 1
+          if [ -z "$VERDICT" ]; then
+            echo "::error::Claude returned no verdict, so the review did not complete. See the 'Run claude-code-action' step."
+            exit 1
+          fi
+          echo "$VERDICT" | jq -r '.summary'
+          if [ "$(echo "$VERDICT" | jq -r '.has_blocking_issues')" = "true" ]; then
+            echo "::error::Claude found blocking issues. See the PR comment."
+            exit 1
+          fi
