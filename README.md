@@ -29,6 +29,7 @@ code on a branch  ──push──▶ Pull Request
 2. Develop on your own PC. The code automatically uses **fake sensors** when it isn't on a Pi.
 3. Need the real sensors? Test your branch in your own checkout on the Pi (see below).
 4. Push and open a pull request. The **Tests** workflow runs on it. Get a teammate's approval, then merge into `main`.
+   - The **Claude Review** workflow also reviews the PR and comments. If it goes red there are blocking issues: fix them, push, and it re-runs.
    - Nothing stops a direct push to `main` (branch protection needs GitHub Pro on a private repo), so stick to PRs.
 5. Merging does **not** deploy. When `main` is at a good point, **publish a release** and that version deploys to the Pi:
    ```
