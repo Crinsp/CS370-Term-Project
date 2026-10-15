@@ -4,23 +4,42 @@ import time
 
 from . import get_sensors
 
-parser = argparse.ArgumentParser(prog="python -m sensors")
-parser.add_argument("--fake", action="store_true", help="use fake readings even on the Pi")
-parser.add_argument("--once", action="store_true", help="print one reading and exit")
-parser.add_argument("--interval", type=float, default=2.5, help="seconds between readings")
-args = parser.parse_args()
 
-with get_sensors(fake=True if args.fake else None) as sensors:
-    try:
-        while True:
-            reading = sensors.read()
-            if args.once and reading.temperature_f is None:
-                # Missed DHT read; retry rather than print blanks.
-                time.sleep(args.interval)
-                continue
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m sensors")
+    parser.add_argument("--fake", action="store_true", help="use fake readings even on the Pi")
+    parser.add_argument("--once", action="store_true", help="print one reading and exit")
+    parser.add_argument("--interval", type=float, default=2.5, help="seconds between readings")
+    return parser.parse_args()
+
+
+def print_once(sensors, interval: float) -> None:
+    """Print the first complete reading, retrying while the DHT11 misses."""
+    while True:
+        reading = sensors.read()
+        if reading.temperature_f is not None:
             print(reading, flush=True)
+            return
+        time.sleep(interval)
+
+
+def print_forever(sensors, interval: float) -> None:
+    while True:
+        print(sensors.read(), flush=True)
+        time.sleep(interval)
+
+
+def main() -> None:
+    args = parse_args()
+    with get_sensors(fake=True if args.fake else None) as sensors:
+        try:
             if args.once:
-                break
-            time.sleep(args.interval)
-    except KeyboardInterrupt:
-        pass
+                print_once(sensors, args.interval)
+            else:
+                print_forever(sensors, args.interval)
+        except KeyboardInterrupt:
+            pass
+
+
+if __name__ == "__main__":
+    main()

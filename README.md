@@ -53,6 +53,8 @@ python3 -m venv .venv
 
 Requires Python 3.10+ (the Pi runs 3.13).
 
+The C core builds with `make` (output in `build/`); `make test` runs its tests and `make asan` reruns them under AddressSanitizer. Both also run in CI.
+
 In code, always get sensors through `get_sensors()`, so the same code works on both PCs and the Pi:
 
 ```python
