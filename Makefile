@@ -6,7 +6,7 @@ BUILD   := build
 
 COMMON  := src/common/crc32.c
 BINS    := $(BUILD)/sensord $(BUILD)/hub $(BUILD)/store $(BUILD)/supervisor
-TESTS   := $(BUILD)/test_crc32
+TESTS   := $(BUILD)/test_crc32 $(BUILD)/test_record
 
 .PHONY: all test asan clean
 
