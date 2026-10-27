@@ -14,15 +14,22 @@ enum cs370_record_source {
 enum cs370_record_flags {
     CS370_FLAG_FAKE    = 1u << 0, /* synthesized, not a live sensor read */
     CS370_FLAG_SUSPECT = 1u << 1, /* out of plausible range / rate-of-change */
+    CS370_FLAG_MISSING = 1u << 2, /* this source's read failed; temp_c/rh/lux are not meaningful */
 };
 
 /*
  * Fixed 32-byte wire/log format shared by sensord, hub, and store.
  * Field order is chosen so every member sits at its natural alignment
  * (no compiler padding) and the CRC covers exactly the preceding 28 bytes.
+ * Native byte order (little-endian on the Pi and on x86_64 dev machines);
+ * this is a same-host IPC/log format, not a portable wire format.
  *
  * temp_c and rh are Celsius/%RH x10 (0.1 resolution); sensors/reading.py
  * works in Fahrenheit, so the sensord/Python boundary must convert.
+ * A bare 0 is a real reading, never "no reading" -- a failed DHT11 read
+ * must be marked with CS370_FLAG_MISSING instead of being zeroed, so the
+ * dashboard can tell a dead/stale sensor from an actual 0.0 (CLAUDE.md:
+ * dead/stale/implausible sensors must be shown as such, never silently).
  */
 struct cs370_record {
     uint64_t mono_ns;   /* CLOCK_MONOTONIC, ns: ordering + duplicate detection */
@@ -38,5 +45,8 @@ struct cs370_record {
 };
 
 #define CS370_RECORD_SIZE 32
+
+_Static_assert(sizeof(struct cs370_record) == CS370_RECORD_SIZE,
+                "cs370_record must be exactly 32 bytes");
 
 #endif
