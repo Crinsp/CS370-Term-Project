@@ -112,6 +112,21 @@ Rules:
 
 Check the I2C sensor with `i2cdetect -y 1`. Override the DHT settings with the `CS370_DHT_PIN` / `CS370_DHT_MODEL` env vars.
 
+## Rebuilding the Pi from scratch
+
+If the SD card dies, nothing on the Pi needs saving except your own `~/.claude/projects` transcripts. Everything else is rebuilt from this repo:
+
+1. Flash **Raspberry Pi OS (64-bit, trixie)** with Raspberry Pi Imager. In its settings, set hostname `piewing`, user `gerritt`, Wi-Fi, and **enable SSH**.
+2. Boot it, log in, and run:
+   ```
+   sudo apt-get install -y gh && gh auth login
+   gh repo clone Crinsp/CS370-Term-Project && CS370-Term-Project/scripts/setup-pi.sh
+   ```
+   `setup-pi.sh` installs the packages, enables I2C, creates `/srv/cs370`, enables lingering, joins Tailscale (it prints a login link), and re-registers the `pi` Actions runner in place of the old one.
+3. Reboot, then redeploy: Actions → **Deploy to Pi** → Run workflow → pick the latest release tag. Or publish a new release.
+
+The new install has new SSH host keys, so on your PC run `ssh-keygen -R piewing` (and the same for its IP) before reconnecting.
+
 ## Running the app as a service
 
 `deploy.sh` restarts a systemd **user** service named `cs370.service` if one is installed (lingering is already enabled for the `gerritt` user). Once there's a long-running app, install it on the Pi:
