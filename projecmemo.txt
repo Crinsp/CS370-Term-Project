@@ -1,0 +1,43 @@
+# Problem memo -- Koba Cage (Zoe Ebert, Gerrit Ewing)
+
+## The user
+Gerrit and I’s mutual friend, Rose, and her crested gecko Koba.
+
+## The problem
+In order to mimic the crested geckos environment in New Caledonia, Rose must
+mist her gecko’s cage twice a day in order to keep it at 80% to 90% humidity
+during those periods. However ideally she would like it to be at 55%— this is hard
+for her when traditional and less expensive automatic terrarium misters
+generally are timer-based and not based on the recorded humidity. Rose’s
+situation is specifically unideal as she has opted to mist it manually, which means
+she cannot make sure the conditions are accurate. We will also implement a heat
+sensor to monitor the heat and keep it at the ideal levels, overall mimicking the
+environment most suited for Koba.
+
+## Why
+Because the humidity and heat must always be kept up, especially in a dryer
+climate like Colorado, 24/7 sensing must be offered in order to mimic the gecko’s
+ideal environment. Additionally because there are quite a few moving parts,
+between the sensors and heater, as well as mister, it is likely that any sort of
+‘phone app’ or package offer for a service like this would be quite expensive.
+
+## The sensors
+HT45 Temperature and Humidity Sensor and DS18B20 Temperature Sensor
+Probe. These sensors will work together and somewhat fused, as both measures
+temperature (as well as one measuring humidity). Temperature and humidity
+will come together for the ultimate goal of creating the idea climate for Koba, but
+additionally we will likely situate the sensors on opposite sides of his cage in
+order to use the temperature sensors to their full ability.
+
+## The mechanisms 
+Kernel module/character driver: We will use a sensor driver to allow our system
+to communicate with the hardware, our temperature and humidity sensors.
+Real-time scheduling: I believe we will likely need to prioritize certain processes’
+over others, especially if Koba’s continued comfort and safety is our goal.
+
+## The risk
+Likely the single biggest risk of this project is the outcome if we fail— we will do
+everything in advance to ensure that the project is safe to be set up in Koba’s
+cage beforehand but all our code needs to be airtight so we do not end up hurting
+him. Of course, we will not have this assignment set up in his cage to begin with
+at all— the vast majority of this project will be done somewhere else.
