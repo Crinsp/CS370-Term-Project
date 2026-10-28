@@ -22,7 +22,10 @@ sudo usermod -aG gpio,i2c "$USER"
 echo "== enable the kernel dht11 driver (DHT11 data on GPIO4); needs a reboot"
 CONFIG=/boot/firmware/config.txt
 [ -f "$CONFIG" ] || CONFIG=/boot/config.txt
-grep -q '^dtoverlay=dht11' "$CONFIG" || echo 'dtoverlay=dht11,gpiopin=4' | sudo tee -a "$CONFIG" >/dev/null
+# [all] so the line applies even if config.txt ends in a model filter like [cm4].
+if ! sudo grep -q '^dtoverlay=dht11,gpiopin=4$' "$CONFIG"; then
+    printf '\n[all]\ndtoverlay=dht11,gpiopin=4\n' | sudo tee -a "$CONFIG" >/dev/null
+fi
 
 echo "== deploy target and user services"
 sudo mkdir -p /srv/cs370
