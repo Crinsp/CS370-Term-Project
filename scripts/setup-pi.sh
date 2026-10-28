@@ -19,6 +19,11 @@ echo "== enable I2C (TSL2591 is on bus 1)"
 sudo raspi-config nonint do_i2c 0
 sudo usermod -aG gpio,i2c "$USER"
 
+echo "== enable the kernel dht11 driver (DHT11 data on GPIO4); needs a reboot"
+CONFIG=/boot/firmware/config.txt
+[ -f "$CONFIG" ] || CONFIG=/boot/config.txt
+grep -q '^dtoverlay=dht11' "$CONFIG" || echo 'dtoverlay=dht11,gpiopin=4' | sudo tee -a "$CONFIG" >/dev/null
+
 echo "== deploy target and user services"
 sudo mkdir -p /srv/cs370
 sudo chown "$USER:$USER" /srv/cs370
@@ -56,5 +61,6 @@ sudo ./svc.sh start
 echo
 echo "Done. Log out and back in (or reboot) so the gpio/i2c groups apply, then check:"
 echo "  i2cdetect -y 1                          # expect 0x29"
+echo "  cat /sys/bus/iio/devices/iio:device*/name   # expect dht11 (after the reboot)"
 echo "  gh api repos/$REPO/actions/runners --jq '.runners[] | .name + \" \" + .status'"
 echo "To redeploy the latest release: gh workflow run deploy.yml --repo $REPO --ref <tag>"
