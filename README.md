@@ -1,6 +1,25 @@
-# CS370-Term-Project
+# CS370-Term-Project — Koba Cage
 
-Raspberry Pi 4 environment monitor: a TSL2591 light sensor and a DHT11 temperature/humidity sensor.
+A Raspberry Pi 4 terrarium monitor for Koba, a crested gecko. It uses a DHT11 temperature/humidity sensor and a TSL2591 light sensor.
+
+**Team:** Zoe Ebert, Gerritt Ewing
+
+## The problem
+
+Koba's owner, Rose, mists the cage by hand twice a day. Each misting should bring humidity up to 80–90%, and between mistings it should sit around 55%. Cheap automatic misters run on a timer, not on measured humidity. Misting by hand means Rose can't tell whether the cage is actually in range. This matters more in a dry climate like Colorado. Commercial monitoring setups (sensors plus an app) are expensive.
+
+## What the device does
+
+- **Senses** temperature, humidity, and light inside the cage, 24/7.
+- **Logs and analyzes** the readings and compares humidity and temperature against Koba's target conditions.
+- **Shows** current conditions and alerts on a dashboard served only on the local network.
+- **Advisory only:** it never controls a mister, heater, or light. Rose stays in control and the device tells her when to act.
+- **Works offline:** no cloud services and no outbound network calls. It keeps working with the network cable unplugged.
+- **Honest about failures:** if a sensor is dead, stale, or giving implausible readings, the dashboard says so instead of showing an old value as current.
+
+## Safety
+
+The biggest risk is harming Koba if the system is wrong. The device is advisory and all development happens away from the cage. It goes into Koba's cage only after it has been tested.
 
 ## How we work (the short version)
 
