@@ -96,7 +96,7 @@ Rule from CLAUDE.md: stale, dead or implausible data is shown as such, never as 
 | 26 | `reserved` | u8[2] | must be zero |
 | 28 | `crc32` | u32 | IEEE CRC-32 of bytes 0-27 |
 
-- The DHT11 resolves whole degC and whole %RH, so `temp_c` and `rh` are always multiples of 10 today; the x10 leaves room for a finer sensor. A failed DHT read is a MISSING record (value fields zero), never a zero reading.
+- On the Pi, the DHT11 reported temperature in 0.1 degC steps and humidity in whole %RH, so `rh` is a multiple of 10 today and `temp_c` is not; the x10 covers both. A failed DHT read is a MISSING record (value fields zero), never a zero reading.
 - Valid record (`cs370_record_valid()`, used by hub and store): CRC matches, `source < 2`, no undefined flag bits, `reserved` is zero, `lux` is finite and >= 0, and fields that do not apply to the source (or any value field of a MISSING record) are zero. Anything else is rejected and logged.
 - SUSPECT bounds (targets, to confirm against Pi data **[PI]**): DHT11 temperature outside 0-50 degC or RH outside 20-90 %, or a change of more than 5 degC or 20 %RH between consecutive samples; light outside 0-88000 lux (TSL2591 range) or a jump that is not explained by gain change.
 - Rate: 2 Hz light + 0.5 Hz DHT = 2.5 records/s, 32 B x 2.5 = 80 B/s, about 6.9 MB/day.
@@ -109,7 +109,7 @@ Rule from CLAUDE.md: stale, dead or implausible data is shown as such, never as 
 
 | Ideal | Actual | Cost |
 |---|---|---|
-| SHT45 RH/temp (+/-1% RH, 0.1 C) | DHT11 (about +/-5% RH, whole degrees, 1 Hz, about 10% missed reads) | cannot resolve small drifts; the model works on trends over minutes, and claims are narrowed accordingly |
+| SHT45 RH/temp (+/-1% RH, 0.1 C) | DHT11 (about +/-5% RH, whole-percent RH, 0.1 C steps seen, 1 Hz, about 10% missed reads **[PI]**) | cannot resolve small drifts; the model works on trends over minutes, and claims are narrowed accordingly |
 | DS18B20 second temperature | none | no independent temperature cross-check; light sensor is the second source |
 | Actuator-in-the-loop control | advisory only | no closed-loop result to measure; evaluation is prediction quality, not control quality |
 | Months of enclosure data | days of provoked episodes | claims limited to episodes we induce (lamp on/off, vent open, misting) |
@@ -126,7 +126,7 @@ TSL2591, alive (no Python; raw `i2c-tools` using the same register addresses the
 
 TSL2591 lux (the C sensord reimplements what `adafruit_tsl2591` does in Python): read C0 (visible + IR, `0xB4`/`0xB5`) and C1 (IR, `0xB6`/`0xB7`); with integration time `ATIME_ms` and gain multiplier `G` (medium = 25x, max = 9876x), `CPL = ATIME_ms * G / 408.0` and `lux = max((C0 - C1) * (1 - C1/C0), 0) / CPL`. A saturated channel (36863 counts at 100 ms integration, 65535 at longer times) is reported as SUSPECT. Gain and integration time are fixed at startup so lux stays comparable over time.
 
-DHT11: **[PI]** pending. Expected units: the kernel `dht11` driver reports `in_temp_input` in milli-degC and `in_humidityrelative_input` in milli-%RH, so the sensord divides by 100 to get the record's x10 units (to confirm). A read error from sysfs becomes a MISSING record. Will contain: `dtoverlay=dht11,gpiopin=4` added, reboot, `dmesg | grep -i dht`, `/sys/bus/iio/devices/iio:device0` present, repeated `in_humidityrelative_input` / `in_temp_input` reads (including misses), and humidity rising when breathed on. Measured miss rate over about 1 hour to follow.
+DHT11 (2026-10-28): before the change `/boot/firmware/config.txt` had no `dht11` line and `/sys/bus/iio/devices/` was empty. With `dtoverlay=dht11,gpiopin=4` added under `[all]` and a reboot, the kernel exposes `/sys/bus/iio/devices/iio:device0` named `dht11@4`; the name carries the GPIO number, so sensord must match the `dht11` prefix, not the exact name. 20 reads, 2 s apart, returned `in_temp_input` = 17800 to 18300 and `in_humidityrelative_input` = 39000 to 47000. These are milli-units (17.8 to 18.3 degC, 39 to 47 %RH), so the sensord divides by 100 to get the record's x10 units. A read error from sysfs becomes a MISSING record. No read failed in the 20, so the ~10% miss rate is still an unverified estimate **[PI]**; a longer run is pending, and the raw capture will go in `docs/evidence/`.
 
 ## 6. Evaluation plan
 

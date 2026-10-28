@@ -17,6 +17,12 @@ Koba's owner, Rose, mists the cage by hand twice a day. Each misting should brin
 - **Works offline:** no cloud services and no outbound network calls. It keeps working with the network cable unplugged.
 - **Honest about failures:** if a sensor is dead, stale, or giving implausible readings, the dashboard says so instead of showing an old value as current.
 
+## Design document (M2)
+
+- Working draft: [`docs/DESIGN.md`](docs/DESIGN.md)
+- Readable pages: [`docs/design/`](docs/design/README.md), also on the [wiki](https://github.com/Crinsp/CS370-Term-Project/wiki)
+- PDF snapshot: [`docs/M2_DesignDoc.pdf`](docs/M2_DesignDoc.pdf)
+
 ## Safety
 
 The biggest risk is harming Koba if the system is wrong. The device is advisory and all development happens away from the cage. It goes into Koba's cage only after it has been tested.
