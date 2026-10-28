@@ -5,6 +5,7 @@ CFLAGS  := $(OPT) -std=c17 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=200809L -Isrc
 BUILD   := build
 
 COMMON  := src/common/crc32.c
+HEADERS := $(wildcard src/common/*.h)
 BINS    := $(BUILD)/sensord $(BUILD)/hub $(BUILD)/store $(BUILD)/supervisor
 TESTS   := $(BUILD)/test_crc32 $(BUILD)/test_record
 
@@ -12,11 +13,11 @@ TESTS   := $(BUILD)/test_crc32 $(BUILD)/test_record
 
 all: $(BINS)
 
-$(BUILD)/%: src/%/main.c $(COMMON) | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $^
+$(BUILD)/%: src/%/main.c $(COMMON) $(HEADERS) | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
-$(BUILD)/test_%: tests/c/test_%.c $(COMMON) | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $^
+$(BUILD)/test_%: tests/c/test_%.c $(COMMON) $(HEADERS) | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
 
 $(BUILD):
 	mkdir -p $@

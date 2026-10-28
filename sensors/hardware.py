@@ -8,6 +8,7 @@ The DHT11 is read through the kernel dht11 IIO driver (`dtoverlay=dht11,gpiopin=
 in config.txt, see scripts/setup-pi.sh), which owns GPIO4. Don't use adafruit_dht.
 """
 import glob
+import logging
 import os
 from datetime import datetime
 
@@ -19,6 +20,8 @@ from .backend import SensorBackend
 from .reading import Reading
 
 IIO_GLOB = "/sys/bus/iio/devices/iio:device*"
+
+log = logging.getLogger(__name__)
 
 
 def _find_dht11_iio() -> str:
@@ -40,18 +43,39 @@ def _read_milli(dev: str, name: str) -> float:
 
 class HardwareSensors(SensorBackend):
     def __init__(self):
-        self._tsl = adafruit_tsl2591.TSL2591(busio.I2C(board.SCL, board.SDA))
-        self._dht = _find_dht11_iio()
+        self._i2c = busio.I2C(board.SCL, board.SDA)
+        try:
+            self._tsl = adafruit_tsl2591.TSL2591(self._i2c)
+        except Exception:
+            self._i2c.deinit()
+            raise
+        # Found lazily and re-found after a failure: the iio:deviceN index can change if the driver re-probes.
+        self._dht: str | None = None
+
+    def _dht_read(self, name: str) -> float | None:
+        """One DHT11 value, or None on a miss. Logs why, so a dead sensor isn't mistaken for an ordinary miss."""
+        try:
+            if self._dht is None:
+                self._dht = _find_dht11_iio()
+            return _read_milli(self._dht, name)
+        except (OSError, ValueError, RuntimeError) as e:
+            # The kernel returns an error on an ordinary miss (ETIMEDOUT/EIO); look the device up again next time.
+            log.warning("dht11 %s read failed: %s: %s", name, type(e).__name__, e)
+            self._dht = None
+            return None
+
+    def _lux(self) -> float:
+        try:
+            return self._tsl.lux
+        except (OSError, RuntimeError) as e:
+            log.warning("tsl2591 read failed: %s: %s", type(e).__name__, e)
+            return float("nan")
 
     def read(self) -> Reading:
-        try:
-            temp_c = _read_milli(self._dht, "in_temp_input")
-            humidity = _read_milli(self._dht, "in_humidityrelative_input")
-        except (OSError, ValueError):
-            # DHT reads fail intermittently (the kernel returns an error); callers just get None this time.
-            temp_c = humidity = None
+        temp_c = self._dht_read("in_temp_input")
+        humidity = self._dht_read("in_humidityrelative_input")
         temp_f = temp_c * 9 / 5 + 32 if temp_c is not None else None
-        return Reading(datetime.now(), temp_f, humidity, self._tsl.lux)
+        return Reading(datetime.now(), temp_f, humidity, self._lux())
 
     def close(self) -> None:
-        pass
+        self._i2c.deinit()
