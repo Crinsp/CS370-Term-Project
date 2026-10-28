@@ -9,15 +9,17 @@ User: Rosalie Endris, keeper of a gecko. The device is advisory only: it senses,
 ```
  kernel:  I2C subsystem (/dev/i2c-1)            GPIO (DHT11 on GPIO4)
               |                                        |
-        [sensord-light]  ~2 Hz               [sensord-dht]  ~0.5 Hz
-              |  UDS, 1 msg/sample                     |  UDS, 1 msg/sample
+        [sensord light]  2 Hz                [sensord dht]  0.5 Hz (kernel dht11 IIO, sysfs)
+          raw I2C, our register code                   |
+              |  SEQPACKET, 32 B record/msg            |  SEQPACKET, 32 B record/msg
               +----------------+-----------------------+
-                               v
-                           [hub]  merges by timestamp, tags source, tracks per-sensor liveness
-                               | 1 Hz fused record (shared-memory ring is a later option)
-                +--------------+---------------+
-                v                              v
-            [store]  append-only log      [analysis]  drift model, band-exit prediction
+                               v  $CS370_RUN_DIR/hub.sock
+                           [hub]  validates CRC/size/source, per-source LIVE/STALE/DEAD,
+                               |  fuses latest-of-each into a 1 Hz snapshot
+                +--------------+------------------------------+
+                | every valid record, 2.5 rec/s               | 1 Hz status.json (tmp + rename)
+                v  $CS370_RUN_DIR/store.sock                  v
+            [store]  append-only log      [analysis] / [dashboard] read the snapshot
              fsync batch, CRC, seq            | ~1 Hz status
                                               v
                                         [dashboard]  LAN HTTP, read-only, serves status + history
@@ -28,11 +30,30 @@ Rates are targets, to be confirmed against measurements **[PI]**. DHT11 cannot b
 
 Every process is a separate C binary under `src/`. Python is limited to the dashboard front end and tooling.
 
+**IPC contract (sensord, hub, store).**
+- Transport: `AF_UNIX`, `SOCK_SEQPACKET`. Each message is exactly one `struct cs370_record` (`src/common/record.h`, 32 bytes). SEQPACKET keeps message boundaries, and a peer that dies shows up as EOF on the next read, so the hub learns about a dead sensord without waiting for a timeout.
+- Sockets: the hub listens on `$CS370_RUN_DIR/hub.sock`, and every sensord connects to it. The store listens on `$CS370_RUN_DIR/store.sock`, and the hub connects to it. `CS370_RUN_DIR` defaults to `$XDG_RUNTIME_DIR/cs370`.
+- Every fd is opened with `SOCK_CLOEXEC`/`O_CLOEXEC`, so a restarted child never inherits a stale socket. Every send uses `MSG_NOSIGNAL`, so a dead peer returns `EPIPE` instead of killing us with SIGPIPE.
+- sensord does not buffer. If the hub is down, it keeps sampling, drops the samples and counts them, and reconnects with exponential backoff (0.5 s, doubling up to 8 s). The gap shows up in the store as a `seq` jump.
+- The hub forwards every valid record to the store. While the store is down, the hub holds them in a bounded 256-record queue (about 100 s of data). When the queue overflows, the oldest records are dropped, counted, and logged.
+- Invalid records (wrong size, bad CRC, unknown source) are rejected and logged, never forwarded.
+
+**Liveness (hub), per source.** Thresholds are targets until the Pi measurements are in **[PI]**.
+
+| State | Condition |
+|---|---|
+| LIVE | a valid, non-MISSING sample within 3 sample periods (DHT 6 s, light 1.5 s) |
+| STALE | no valid sample for 3 periods, or the sensord connection closed |
+| DEAD | no valid sample for 60 s |
+| SUSPECT | the latest value failed the range or rate-of-change check (tracked separately from staleness) |
+
+Every second the hub atomically replaces `$CS370_RUN_DIR/status.json` (write to a temp file, then `rename`). For each source, the file carries the state, the last value, its age, and the FAKE flag. The dashboard renders this state and never infers freshness on its own.
+
 ## 2. Mechanism mapping
 
 | Menu item | Component | Justification from Rosalie's needs |
 |---|---|---|
-| **E** multi-process + supervisor | `sensord-*`, `hub`, `supervisor` | A dead sensor must never look like "humidity is fine". Each sensor is isolated so a hung DHT11 read cannot stall light sampling or the dashboard, and the supervisor restarts it and logs the gap. The dashboard reports the sensor as dead or stale. |
+| **E** multi-process + supervisor | `sensord-*`, `hub`, `supervisor` | A dead sensor must never look like "humidity is fine". Each sensor runs in its own process, so a hung DHT11 read cannot stall light sampling or the dashboard. When a sensord dies, its SEQPACKET connection hits EOF and the hub marks that source STALE right away. If it stays silent for 60 s, the hub marks it DEAD. The supervisor restarts it, and the gap is visible in the log as a `seq` jump. The dashboard shows STALE or DEAD from `status.json` instead of the last value. |
 | **D** crash-consistent storage | `store` | The drift model needs days of history and Rosalie's question after a bad night is "what happened", so the log must survive a power cut. Append-only fixed-size CRC records plus a recovery scan that truncates a torn tail. |
 
 Not chosen, and why: A (kernel driver) adds no value for a 1 Hz sensor; B and C do not matter at DHT11 timescales (jitter of a few ms is irrelevant to humidity that moves over minutes); F has no rate pressure. We say this plainly rather than bolt on a mechanism.
@@ -46,7 +67,10 @@ Not chosen, and why: A (kernel driver) adds no value for a 1 Hz sensor; B and C 
 | sensord-light | I2C NACK / bus error | errno from ioctl/read | reinit device; after N failures mark DEAD | `light err errno=<n>` |
 | any sensord | process killed (`kill -9`) | supervisor `waitpid` | restart with backoff, new generation id | `child dht died sig=9 restart=<n>` |
 | any sensord | hang (alive, no output) | no heartbeat/sample within deadline | supervisor SIGKILL then restart | `child dht hung, killed` |
-| hub | exits | supervisor | restart; sensord reconnect UDS | `hub restart` |
+| hub | exits | supervisor; each sensord gets `EPIPE`/`ECONNREFUSED` | restart; each sensord counts dropped samples and reconnects with backoff (0.5 s up to 8 s) | `hub restart`, `sensord dht hub lost, dropped=<n>` |
+| hub | store down / not yet started | `connect` fails or `EPIPE` on send | hold up to 256 records, reconnect with backoff, drop the oldest on overflow | `hub store lost`, `hub store drop n=<total>` |
+| hub | malformed record from a client | size != 32, CRC mismatch, or unknown source | reject the record, keep the connection | `hub reject src=<fd> reason=crc` |
+| sensord | dht11 driver/overlay missing | sysfs path absent at startup | exit 1 (supervisor logs and backs off); dashboard shows DHT DEAD | `sensord dht no iio device` |
 | store | power cut mid-write | CRC/length check at startup scan | truncate to last good record; continue | `recover truncated <bytes>` |
 | store | disk full | `write` returns ENOSPC | stop appending, dashboard flag, keep sensing | `store ENOSPC` |
 | supervisor | dies | systemd (or runner) restarts it; children detect parent loss and exit | clean restart; orphan fds closed | `supervisor start gen=<n>` |
@@ -72,8 +96,18 @@ Rule from CLAUDE.md: stale, dead or implausible data is shown as such, never as 
 | DS18B20 second temperature | none | no independent temperature cross-check; light sensor is the second source |
 | Actuator-in-the-loop control | advisory only | no closed-loop result to measure; evaluation is prediction quality, not control quality |
 | Months of enclosure data | days of provoked episodes | claims limited to episodes we induce (lamp on/off, vent open, misting) |
+| DHT11 read with timing we control | kernel `dht11` IIO driver (`dtoverlay=dht11,gpiopin=4`), read through sysfs | the bit timing is the kernel's, not ours (DHT timing is not one of our chosen mechanisms); bit-banging 26-70 us pulses from userspace is exactly where scheduling jitter breaks reads; the overlay claims GPIO4, so the Python `adafruit_dht` path no longer works on the Pi. Fallback: libgpiod v2 edge timestamps |
 
-**[PI]** Evidence to paste here: `i2cdetect -y 1` (expect 0x29), `python -m sensors --once` with real values, measured DHT11 miss rate over about 1 hour.
+**Pi evidence (2026-10-27, piewing, kernel 6.18.50+rpt-rpi-v8 aarch64, libgpiod 2.2.1).**
+
+TSL2591, alive (no Python; raw `i2c-tools` using the same register addresses the C backend uses):
+- `i2cdetect -y 1`: device at 0x29, nothing else on bus 1.
+- ID register (`i2cget -y 1 0x29 0xB2`) returns `0x50`, the TSL2591 part ID.
+- After writing ENABLE = PON|AEN (`0xA0` ← `0x03`), the status register's AVALID bit is set.
+- Channel counts (`0xB4`–`0xB7`) were near 0 at medium gain in the dark room and steady, non-zero at maximum gain. The counts scale with the CONTROL (`0xA1`) gain setting. Gain was restored to medium (`0x10`).
+- Implementation note: on this bus, SMBus word reads return only one byte per register. The C backend reads C0DATAL..C1DATAH (4 bytes) as one block starting at command `0xB4`, not as two word reads.
+
+DHT11: **[PI]** pending. Will contain: `dtoverlay=dht11,gpiopin=4` added, reboot, `dmesg | grep -i dht`, `/sys/bus/iio/devices/iio:device0` present, repeated `in_humidityrelative_input` / `in_temp_input` reads (including misses), and humidity rising when breathed on. Measured miss rate over about 1 hour to follow.
 
 ## 6. Evaluation plan
 
@@ -91,9 +125,11 @@ Ownership (first authorship and answerability, not exclusivity) **[TEAM]**:
 
 | Subsystem | Owner |
 |---|---|
-| sensord-dht, sensord-light | TBD |
-| store (format, recovery) | TBD |
-| hub + analysis (drift model) | TBD |
+| sensord-dht, sensord-light | Gerritt |
+| hub (merge, liveness, status snapshot, forwarding to store) | Gerritt |
+| record format (`src/common/record.h`) | Zoe |
+| store (format, recovery) | Zoe |
+| analysis (drift model) | TBD |
 | supervisor, dashboard | shared |
 
 Claude Code is used for: exploring, drafting from approved plans, tests, adversarial review of diffs. It is not used for: the drift model's design decisions, the failure-mode table claims, or anything at runtime. Boundary kept visible by: no network client in `src/` (the only socket is the LAN listener; a CI grep checks for `connect(`/curl/http client usage), and no model files in the tree.
