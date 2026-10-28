@@ -23,8 +23,8 @@ See README.md for the full workflow. Key points:
 - Smallest diff that passes. Do not refactor unrelated code.
 
 ## Ownership (TBD: fill in at M2; ownership = first authorship + answerability, not exclusivity)
-- Gerritt: TBD
-- Zoe: TBD
+- Gerritt: sensord (`src/sensord/`), hub (`src/hub/`)
+- Zoe: record format (`src/common/record.h`), store (`src/store/`)
 - Shared: supervisor, interface. The agent edits outside the current session owner's area only when told explicitly.
 
 ## Course process
