@@ -81,9 +81,26 @@ Rule from CLAUDE.md: stale, dead or implausible data is shown as such, never as 
 
 ## 4. Storage and data
 
-- Record: fixed 32 bytes: `seq u64, mono_ns u64, wall_s u32, source u8 (dht/light), flags u8 (real/fake/suspect), temp_c i16 (x10), rh u16 (x10), lux f32, crc32 u32`. Exact layout **[TEAM]**.
-- Rate: about 1.5 records/s combined, about 4 MB/day.
-- Retention: keep 30 days, rotate by segment file; the dashboard reads history from the log, not from memory.
+- Record: fixed 32 bytes, little-endian, no padding, defined in `src/common/record.h` (the header is the source of truth; `tests/c/test_record.c` checks every offset):
+
+| Offset | Field | Type | Meaning |
+|---|---|---|---|
+| 0 | `mono_ns` | u64 | `CLOCK_MONOTONIC` ns: ordering and duplicate detection |
+| 8 | `seq` | u32 | per-source sequence number |
+| 12 | `wall_s` | u32 | unix seconds, advisory only (the clock can jump) |
+| 16 | `lux` | f32 | TSL2591 lux; 0 unless `source = light` and not MISSING |
+| 20 | `rh` | u16 | %RH x10; 0 unless `source = dht` and not MISSING |
+| 22 | `temp_c` | i16 | degC x10; 0 unless `source = dht` and not MISSING |
+| 24 | `source` | u8 | 0 = dht, 1 = light |
+| 25 | `flags` | u8 | bit 0 FAKE, bit 1 SUSPECT, bit 2 MISSING; 0 = real |
+| 26 | `reserved` | u8[2] | must be zero |
+| 28 | `crc32` | u32 | IEEE CRC-32 of bytes 0-27 |
+
+- The DHT11 resolves whole degC and whole %RH, so `temp_c` and `rh` are always multiples of 10 today; the x10 leaves room for a finer sensor. A failed DHT read is a MISSING record (value fields zero), never a zero reading.
+- Valid record (`cs370_record_valid()`, used by hub and store): CRC matches, `source < 2`, no undefined flag bits, `reserved` is zero, `lux` is finite and >= 0, and fields that do not apply to the source (or any value field of a MISSING record) are zero. Anything else is rejected and logged.
+- SUSPECT bounds (targets, to confirm against Pi data **[PI]**): DHT11 temperature outside 0-50 degC or RH outside 20-90 %, or a change of more than 5 degC or 20 %RH between consecutive samples; light outside 0-88000 lux (TSL2591 range) or a jump that is not explained by gain change.
+- Rate: 2 Hz light + 0.5 Hz DHT = 2.5 records/s, 32 B x 2.5 = 80 B/s, about 6.9 MB/day.
+- Retention: keep 14 days (about 100 MB at 80 B/s, small next to the Pi's 32 GB card), rotate by segment file and delete the oldest; the dashboard reads history from the log, not from memory.
 - Durability: `write` per record into a buffered segment, `fdatasync` every N records or 5 s, whichever is first; the loss window is at most 5 s and is recorded as a measured number in the evaluation.
 - Recovery: on start, scan the tail segment, verify CRC, truncate at the first bad record.
 - Replayed or synthetic records carry `flags=fake` and the dashboard and logs label them.
@@ -107,29 +124,35 @@ TSL2591, alive (no Python; raw `i2c-tools` using the same register addresses the
 - Channel counts (`0xB4`–`0xB7`) were near 0 at medium gain in the dark room and steady, non-zero at maximum gain. The counts scale with the CONTROL (`0xA1`) gain setting. Gain was restored to medium (`0x10`).
 - Implementation note: on this bus, SMBus word reads return only one byte per register. The C backend reads C0DATAL..C1DATAH (4 bytes) as one block starting at command `0xB4`, not as two word reads.
 
-DHT11: **[PI]** pending. Will contain: `dtoverlay=dht11,gpiopin=4` added, reboot, `dmesg | grep -i dht`, `/sys/bus/iio/devices/iio:device0` present, repeated `in_humidityrelative_input` / `in_temp_input` reads (including misses), and humidity rising when breathed on. Measured miss rate over about 1 hour to follow.
+TSL2591 lux (the C sensord reimplements what `adafruit_tsl2591` does in Python): read C0 (visible + IR, `0xB4`/`0xB5`) and C1 (IR, `0xB6`/`0xB7`); with integration time `ATIME_ms` and gain multiplier `G` (medium = 25x, max = 9876x), `CPL = ATIME_ms * G / 408.0` and `lux = max((C0 - C1) * (1 - C1/C0), 0) / CPL`. A saturated channel (36863 counts at 100 ms integration, 65535 at longer times) is reported as SUSPECT. Gain and integration time are fixed at startup so lux stays comparable over time.
+
+DHT11: **[PI]** pending. Expected units: the kernel `dht11` driver reports `in_temp_input` in milli-degC and `in_humidityrelative_input` in milli-%RH, so the sensord divides by 100 to get the record's x10 units (to confirm). A read error from sysfs becomes a MISSING record. Will contain: `dtoverlay=dht11,gpiopin=4` added, reboot, `dmesg | grep -i dht`, `/sys/bus/iio/devices/iio:device0` present, repeated `in_humidityrelative_input` / `in_temp_input` reads (including misses), and humidity rising when breathed on. Measured miss rate over about 1 hour to follow.
 
 ## 6. Evaluation plan
 
 | Measurement | Method | Target |
 |---|---|---|
-| Sample-to-log latency distribution | timestamp at sensord read vs at log append; p50/p95/p99, idle and under CPU stress | p99 under 100 ms (to confirm) |
-| Per-process CPU and RSS | heartbeat series over the 48 h soak | RSS flat (no leak), CPU under 5% |
+| Sample-to-log latency distribution | timestamp at sensord read vs at log append; p50/p95/p99, idle and under CPU stress | p99 under 250 ms (to confirm) |
+| Per-process CPU and RSS | heartbeat series over the 48 h soak | RSS flat (no leak), CPU under 10% |
 | Domain metric: band-exit prediction | N provoked episodes labeled by us; compare drift model with a plain threshold on lead time, misses, false alarms | model alerts earlier than threshold with no more false alarms |
 | Fault injection | `kill -9` each child, unplug each sensor 10 min, power cut mid-write | each row in section 3 produces its log line and recovers |
 | Durability | cut power at random during writes, repeat M times | zero corrupt records read back; loss window within 5 s |
 
 ## 7. Ownership and AI-use plan
 
+Contributions so far: Gerritt set up the repo, the deploy and test scaffolding, the dummy/fake sensor code, and wired and configured the sensors on the Pi. Zoe drove the project design, including choosing the two-sensor idea, and wrote the README contributions.
+
 Ownership (first authorship and answerability, not exclusivity) **[TEAM]**:
 
 | Subsystem | Owner |
 |---|---|
-| sensord-dht, sensord-light | Gerritt |
-| hub (merge, liveness, status snapshot, forwarding to store) | Gerritt |
+| sensord-dht, sensord-light | Zoe |
+| hub: the M3 pipeline that fuses both sensors (merge, liveness, status snapshot, forwarding to store) | Gerritt |
 | record format (`src/common/record.h`) | Zoe |
 | store (format, recovery) | Zoe |
 | analysis (drift model) | TBD |
 | supervisor, dashboard | shared |
+
+Gerritt owns the hub, the cooperating-sensors pipeline. Zoe owns everything that feeds records into the hub and on to the store (sensord, record format, store).
 
 Claude Code is used for: exploring, drafting from approved plans, tests, adversarial review of diffs. It is not used for: the drift model's design decisions, the failure-mode table claims, or anything at runtime. Boundary kept visible by: no network client in `src/` (the only socket is the LAN listener; a CI grep checks for `connect(`/curl/http client usage), and no model files in the tree.

@@ -101,7 +101,7 @@ scripts/setup-venv.sh          # on the Pi this also installs the hardware libra
 Rules:
 - **Never edit `/srv/cs370`.** That's the deployed release, and the next deploy overwrites it.
 - **Only one program can use the DHT11 at a time.** Tell your teammates before running anything on the real sensors.
-- If you see `Unable to set line 4 to input`, a leftover process is holding the pin. Clear it with `pkill -f libgpiod_pulsein`.
+- The DHT11 is read through the kernel `dht11` driver (`dtoverlay=dht11,gpiopin=4`, added by `scripts/setup-pi.sh`; reboot once). The overlay owns GPIO4, so `adafruit_dht` / libgpiod pulse readers will not work on it.
 
 ## Hardware
 
@@ -110,7 +110,7 @@ Rules:
 | TSL2591 light | I2C bus 1: SDA pin 3, SCL pin 5, address `0x29` |
 | DHT11 temp/humidity (3-wire board) | data → GPIO4 (pin 7), + → **3.3V** (pin 1), − → GND |
 
-Check the I2C sensor with `i2cdetect -y 1`. Override the DHT settings with the `CS370_DHT_PIN` / `CS370_DHT_MODEL` env vars.
+Check the I2C sensor with `i2cdetect -y 1` and the DHT11 with `cat /sys/bus/iio/devices/iio:device*/name` (expect `dht11`). The DHT11 reports whole °C and whole %RH.
 
 ## Rebuilding the Pi from scratch
 
@@ -148,4 +148,4 @@ EOF
 systemctl --user daemon-reload && systemctl --user enable --now cs370.service
 ```
 
-Note: a service that reads the sensors holds the DHT11 pin, so stop it (`systemctl --user stop cs370`) before testing hardware from your own checkout.
+Note: a service that reads the sensors may hold the DHT11, so stop it (`systemctl --user stop cs370`) before testing hardware from your own checkout.

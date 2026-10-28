@@ -2,4 +2,3 @@
 -r requirements.txt
 adafruit-blinka
 adafruit-circuitpython-tsl2591
-adafruit-circuitpython-dht

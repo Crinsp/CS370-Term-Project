@@ -7,7 +7,7 @@ from .backend import SensorBackend
 from .reading import Reading
 
 TEMP_F_RANGE = (60.0, 80.0)
-HUMIDITY_RANGE = (25.0, 70.0)
+HUMIDITY_RANGE = (25.0, 95.0)  # covers the keeper's 80-90% misting target
 MAX_TEMP_STEP_F = 0.5
 MAX_HUMIDITY_STEP = 1.0
 MAX_LUX = 400

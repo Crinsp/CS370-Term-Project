@@ -7,7 +7,7 @@ See README.md for the full workflow. Key points:
 - Hardware libraries (`adafruit-*`) go in `requirements-pi.txt` only; everything else goes in `requirements.txt`.
 - Run tests with `python -m unittest discover -s tests`.
 - C core: `make` builds to `build/`, `make test` runs `tests/c/`, `make asan` reruns them under ASan+UBSan. Sources live in `src/<component>/main.c`; shared code in `src/common/`.
-- On the Pi: never edit `/srv/cs370` (it's the deployed release). Use a personal checkout under `~/dev/<name>`. Only one process can use the DHT11 (GPIO4) at a time.
+- On the Pi: never edit `/srv/cs370` (it's the deployed release). Use a personal checkout under `~/dev/<name>`. The DHT11 is read via the kernel `dht11` IIO driver (sysfs), not `adafruit_dht`.
 
 ## Hard constraints (graded; team law)
 - The PRODUCT makes no network calls except serving its own LAN interface. No LLM APIs, no cloud inference, no pretrained models. All analysis/control logic is code we wrote. The device must work with the network cable unplugged.
@@ -23,8 +23,8 @@ See README.md for the full workflow. Key points:
 - Smallest diff that passes. Do not refactor unrelated code.
 
 ## Ownership (TBD: fill in at M2; ownership = first authorship + answerability, not exclusivity)
-- Gerritt: sensord (`src/sensord/`), hub (`src/hub/`)
-- Zoe: record format (`src/common/record.h`), store (`src/store/`)
+- Gerritt: hub (`src/hub/`), the M3 pipeline that fuses both sensors
+- Zoe: sensord (`src/sensord/`), record format (`src/common/record.h`), store (`src/store/`)
 - Shared: supervisor, interface. The agent edits outside the current session owner's area only when told explicitly.
 
 ## Course process
