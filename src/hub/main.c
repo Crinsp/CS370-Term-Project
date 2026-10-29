@@ -4,7 +4,8 @@
  * to 256 records while the store is down (docs/DESIGN.md section 1, IPC
  * contract). Per-source liveness and status.json arrive in a later change.
  *
- * Exit codes: 0 after SIGTERM/SIGINT, 1 on a startup or poll failure.
+ * Signals: SIGTERM/SIGINT stop it; SIGUSR1 prints a heartbeat line now.
+ * Exit codes: 0 after SIGTERM/SIGINT, 1 on a startup, poll or clock failure.
  */
 #define _GNU_SOURCE /* pipe2 */
 #include <errno.h>
@@ -15,6 +16,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -27,6 +29,10 @@
 #define NS_PER_MS    1000000ull
 #define HEARTBEAT_NS (30ull * 1000000000ull) /* CLAUDE.md: heartbeat within 60 s */
 #define DROP_LOG_NS  (10ull * 1000000000ull) /* at most one drop line per 10 s */
+
+/* Fixed pollfd slots; the store (when connected) and the clients follow. */
+enum { SLOT_SIG, SLOT_LISTEN, SLOT_FIRST_DYNAMIC };
+#define POLL_MAX (SLOT_FIRST_DYNAMIC + 1 + MAX_CLIENTS)
 
 struct hub {
     int lfd;
@@ -41,6 +47,16 @@ struct hub {
     uint64_t rejected;
     char hub_path[PATH_MAX];
     char store_path[PATH_MAX];
+};
+
+/* One poll() round: which pollfd is the store and which slot each client
+ * pollfd belongs to. */
+struct pollset {
+    struct pollfd pfd[POLL_MAX];
+    int slot_at[POLL_MAX];
+    int nfds;
+    int store_idx; /* -1 when the store is not connected */
+    int first_client;
 };
 
 static struct hub hub; /* static: the queue is 8 KiB */
@@ -59,13 +75,17 @@ static void on_signal(int sig)
     errno = e;
 }
 
+/* CLOCK_MONOTONIC cannot fail on Linux with a valid pointer, so a failure
+ * means something is badly wrong; every timer depends on it, so exit rather
+ * than run on a bogus time. The kernel closes our fds, and the next start's
+ * cs370_listen() removes the stale hub.sock. */
 static uint64_t now_ns(void)
 {
     struct timespec ts;
 
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        fprintf(stderr, "hub: clock_gettime: %s\n", strerror(errno));
-        return 0;
+        fprintf(stderr, "hub: clock_gettime: %s, exiting\n", strerror(errno));
+        exit(1);
     }
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
@@ -88,9 +108,13 @@ static int set_nonblock(int fd)
     return 0;
 }
 
-static void schedule_connect(struct hub *h, uint64_t now)
+/* Returns the delay chosen, in ms. */
+static uint32_t schedule_connect(struct hub *h, uint64_t now)
 {
-    h->next_connect_ns = now + cs370_backoff_next(&h->backoff) * NS_PER_MS;
+    uint32_t d = cs370_backoff_next(&h->backoff);
+
+    h->next_connect_ns = now + d * NS_PER_MS;
+    return d;
 }
 
 /* Logs the drop total, at most once per DROP_LOG_NS unless forced. */
@@ -105,12 +129,15 @@ static void log_drops(struct hub *h, uint64_t now, int force)
     h->last_drop_log_ns = now;
 }
 
+/* The backoff is not reset here or on connect, only after a record is
+ * delivered, so a store that accepts and then dies at once (a crash loop)
+ * is retried with growing delays instead of every 0.5 s. */
 static void store_lost(struct hub *h, const char *why, uint64_t now)
 {
-    fprintf(stderr, "hub store lost: %s, queued=%zu\n", why, h->q.len);
     close_fd(&h->store_fd, "store");
-    cs370_backoff_reset(&h->backoff);
-    schedule_connect(h, now);
+    uint32_t d = schedule_connect(h, now);
+    fprintf(stderr, "hub store lost: %s, queued=%zu, retry in %" PRIu32 " ms\n",
+            why, h->q.len, d);
 }
 
 /* Sends queued records until the queue is empty or the socket is full. A
@@ -122,6 +149,7 @@ static void flush(struct hub *h, uint64_t now)
     while (h->store_fd >= 0 && (r = hub_queue_peek(&h->q)) != NULL) {
         if (cs370_send_record(h->store_fd, r) == 0) {
             hub_queue_pop(&h->q);
+            cs370_backoff_reset(&h->backoff); /* the store is really taking records */
             continue;
         }
         if (errno == EINTR)
@@ -138,10 +166,11 @@ static void store_try_connect(struct hub *h, uint64_t now)
 
     if (fd < 0) {
         int e = errno;
-        schedule_connect(h, now);
-        if (e == ENOENT || e == ECONNREFUSED || e == EAGAIN)
-            fprintf(stderr, "hub store unavailable: %s, retry in %" PRIu64 " ms\n",
-                    strerror(e), (uint64_t)((h->next_connect_ns - now) / NS_PER_MS));
+        uint32_t d = schedule_connect(h, now);
+        /* cs370_connect already logged any other errno. */
+        if (e == ENOENT || e == ECONNREFUSED || e == EAGAIN || e == EINTR)
+            fprintf(stderr, "hub store unavailable: %s, retry in %" PRIu32 " ms\n",
+                    strerror(e), d);
         return;
     }
     if (set_nonblock(fd) != 0) {
@@ -150,7 +179,6 @@ static void store_try_connect(struct hub *h, uint64_t now)
         return;
     }
     h->store_fd = fd;
-    cs370_backoff_reset(&h->backoff);
     fprintf(stderr, "hub store connected, queued=%zu\n", h->q.len);
     log_drops(h, now, 1);
     flush(h, now);
@@ -253,6 +281,54 @@ static void heartbeat(struct hub *h, uint64_t now)
     h->next_heartbeat_ns = now + HEARTBEAT_NS;
 }
 
+/* Drains the signal pipe. Returns 1 if a stop signal arrived. SIGUSR1
+ * prints a heartbeat (handy on the Pi, and lets tests read the hub's state
+ * without sleeping). */
+static int handle_signals(struct hub *h, uint64_t now)
+{
+    unsigned char sigs[16];
+    ssize_t n;
+    int stop = 0;
+
+    while ((n = read(sig_pipe[0], sigs, sizeof(sigs))) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            if (sigs[i] == SIGUSR1) {
+                heartbeat(h, now);
+            } else {
+                fprintf(stderr, "hub stopping on signal %d\n", sigs[i]);
+                stop = 1;
+            }
+        }
+    }
+    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        fprintf(stderr, "hub: read signal pipe: %s\n", strerror(errno));
+    return stop;
+}
+
+static void build_pollset(const struct hub *h, struct pollset *ps)
+{
+    int n = SLOT_FIRST_DYNAMIC;
+
+    ps->pfd[SLOT_SIG] = (struct pollfd){.fd = sig_pipe[0], .events = POLLIN};
+    ps->pfd[SLOT_LISTEN] = (struct pollfd){.fd = h->lfd, .events = POLLIN};
+    ps->store_idx = -1;
+    if (h->store_fd >= 0) {
+        ps->store_idx = n;
+        ps->pfd[n++] = (struct pollfd){
+            .fd = h->store_fd,
+            .events = (short)(POLLIN | (h->q.len ? POLLOUT : 0)),
+        };
+    }
+    ps->first_client = n;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (h->clients[i] >= 0) {
+            ps->slot_at[n] = i;
+            ps->pfd[n++] = (struct pollfd){.fd = h->clients[i], .events = POLLIN};
+        }
+    }
+    ps->nfds = n;
+}
+
 static int poll_timeout_ms(const struct hub *h, uint64_t now)
 {
     uint64_t next = h->next_heartbeat_ns;
@@ -268,8 +344,7 @@ static int poll_timeout_ms(const struct hub *h, uint64_t now)
 int main(void)
 {
     struct hub *h = &hub;
-    struct pollfd pfd[3 + MAX_CLIENTS];
-    int slot_at[3 + MAX_CLIENTS];
+    struct pollset ps;
     char dir[PATH_MAX];
     struct sigaction sa;
     int status = 1;
@@ -294,7 +369,8 @@ int main(void)
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGTERM, &sa, NULL) != 0 || sigaction(SIGINT, &sa, NULL) != 0) {
+    if (sigaction(SIGTERM, &sa, NULL) != 0 || sigaction(SIGINT, &sa, NULL) != 0 ||
+        sigaction(SIGUSR1, &sa, NULL) != 0) {
         fprintf(stderr, "hub: sigaction: %s\n", strerror(errno));
         goto out;
     }
@@ -309,26 +385,8 @@ int main(void)
     store_try_connect(h, now);
 
     for (;;) {
-        int nfds = 0, store_idx = -1, first_client;
-
-        pfd[nfds++] = (struct pollfd){.fd = sig_pipe[0], .events = POLLIN};
-        pfd[nfds++] = (struct pollfd){.fd = h->lfd, .events = POLLIN};
-        if (h->store_fd >= 0) {
-            store_idx = nfds;
-            pfd[nfds++] = (struct pollfd){
-                .fd = h->store_fd,
-                .events = (short)(POLLIN | (h->q.len ? POLLOUT : 0)),
-            };
-        }
-        first_client = nfds;
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (h->clients[i] >= 0) {
-                slot_at[nfds] = i;
-                pfd[nfds++] = (struct pollfd){.fd = h->clients[i], .events = POLLIN};
-            }
-        }
-
-        int rc = poll(pfd, (nfds_t)nfds, poll_timeout_ms(h, now_ns()));
+        build_pollset(h, &ps);
+        int rc = poll(ps.pfd, (nfds_t)ps.nfds, poll_timeout_ms(h, now_ns()));
         if (rc < 0) {
             if (errno == EINTR)
                 continue;
@@ -337,19 +395,14 @@ int main(void)
         }
         now = now_ns();
 
-        if (pfd[0].revents & POLLIN) {
-            unsigned char sig = 0;
-            if (read(sig_pipe[0], &sig, 1) < 0 && errno != EAGAIN)
-                fprintf(stderr, "hub: read signal pipe: %s\n", strerror(errno));
-            fprintf(stderr, "hub stopping on signal %d\n", sig);
+        if ((ps.pfd[SLOT_SIG].revents & POLLIN) && handle_signals(h, now))
             break;
-        }
-        if (store_idx >= 0 && pfd[store_idx].revents)
-            handle_store(h, pfd[store_idx].revents, now);
-        for (int k = first_client; k < nfds; k++)
-            if (pfd[k].revents)
-                handle_client(h, slot_at[k], now);
-        if (pfd[1].revents & POLLIN)
+        if (ps.store_idx >= 0 && ps.pfd[ps.store_idx].revents)
+            handle_store(h, ps.pfd[ps.store_idx].revents, now);
+        for (int k = ps.first_client; k < ps.nfds; k++)
+            if (ps.pfd[k].revents)
+                handle_client(h, ps.slot_at[k], now);
+        if (ps.pfd[SLOT_LISTEN].revents & POLLIN)
             handle_accept(h);
         if (h->store_fd < 0 && now >= h->next_connect_ns)
             store_try_connect(h, now);
