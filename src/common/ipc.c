@@ -70,6 +70,15 @@ int cs370_run_dir(char *buf, size_t len)
         errno = ENOTDIR;
         return fail("run dir", buf);
     }
+    /* Our sockets must not live in a dir someone else controls or can see. */
+    if (st.st_uid != geteuid()) {
+        errno = EACCES;
+        return fail("run dir not owned by us:", buf);
+    }
+    if (st.st_mode & 077) {
+        errno = EACCES;
+        return fail("run dir must be mode 0700:", buf);
+    }
     return 0;
 }
 
@@ -94,14 +103,27 @@ int cs370_listen(const char *path)
     if (fill_addr(&addr, path) != 0)
         return fail("listen path", path);
 
-    /* Remove a socket file left by a previous run (the supervisor runs one
-     * instance), but never delete anything that is not a socket. */
+    /* Remove a socket file left by a previous run, but never delete anything
+     * that is not a socket, and never take over a socket that a live
+     * listener still answers on. (Two instances starting at the same moment
+     * can still race between the probe and the unlink; the supervisor runs
+     * one instance.) */
     if (lstat(path, &st) == 0) {
+        int probe;
+
         if (!S_ISSOCK(st.st_mode)) {
             errno = EEXIST;
             return fail("listen: not a socket", path);
         }
-        if (unlink(path) != 0)
+        probe = cs370_connect(path);
+        if (probe >= 0 || errno == EAGAIN) {
+            close_keep_errno(probe);
+            errno = EADDRINUSE;
+            return fail("listen: another listener is live on", path);
+        }
+        if (errno != ECONNREFUSED && errno != ENOENT)
+            return -1; /* logged by cs370_connect */
+        if (unlink(path) != 0 && errno != ENOENT)
             return fail("unlink", path);
     } else if (errno != ENOENT) {
         return fail("lstat", path);
@@ -114,7 +136,7 @@ int cs370_listen(const char *path)
         fail("bind", path);
         goto err;
     }
-    if (listen(fd, 8) != 0) {
+    if (listen(fd, CS370_LISTEN_BACKLOG) != 0) {
         fail("listen", path);
         goto err;
     }
@@ -146,7 +168,8 @@ int cs370_connect(const char *path)
     if (fd < 0)
         return fail("socket", path);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        if (errno != ENOENT && errno != ECONNREFUSED && errno != EAGAIN)
+        if (errno != ENOENT && errno != ECONNREFUSED && errno != EAGAIN &&
+            errno != EINTR)
             fail("connect", path);
         goto err;
     }

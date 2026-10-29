@@ -25,9 +25,9 @@ static int failures;
 
 static char base[] = "/tmp/cs370-test-ipc-XXXXXX";
 
-static void join(char *out, const char *name)
+static void join(char *out, size_t len, const char *name)
 {
-    snprintf(out, PATH_MAX, "%s/%s", base, name);
+    snprintf(out, len, "%s/%s", base, name);
 }
 
 static int cloexec(int fd)
@@ -57,17 +57,24 @@ static void test_run_dir(void)
     struct stat st;
 
     /* $CS370_RUN_DIR wins, is created 0700, and a second call is fine. */
-    join(want, "run");
+    join(want, sizeof(want), "run");
     setenv("CS370_RUN_DIR", want, 1);
     CHECK(cs370_run_dir(got, sizeof(got)) == 0);
     CHECK(strcmp(got, want) == 0);
     CHECK(stat(want, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0700);
     CHECK(cs370_run_dir(got, sizeof(got)) == 0);
 
+    /* An existing dir that group/other can reach is refused. */
+    CHECK(chmod(want, 0755) == 0);
+    errno = 0;
+    CHECK(cs370_run_dir(got, sizeof(got)) == -1 && errno == EACCES);
+    CHECK(chmod(want, 0700) == 0);
+    CHECK(cs370_run_dir(got, sizeof(got)) == 0);
+
     /* Falls back to $XDG_RUNTIME_DIR/cs370. */
     unsetenv("CS370_RUN_DIR");
     setenv("XDG_RUNTIME_DIR", base, 1);
-    join(want, "cs370");
+    join(want, sizeof(want), "cs370");
     CHECK(cs370_run_dir(got, sizeof(got)) == 0);
     CHECK(strcmp(got, want) == 0);
     CHECK(stat(want, &st) == 0 && (st.st_mode & 0777) == 0700);
@@ -78,7 +85,7 @@ static void test_run_dir(void)
     CHECK(cs370_run_dir(got, sizeof(got)) == -1 && errno == ENOENT);
 
     /* Path exists but is a regular file. */
-    join(file, "plainfile");
+    join(file, sizeof(file), "plainfile");
     FILE *f = fopen(file, "w");
     CHECK(f != NULL);
     if (f)
@@ -103,6 +110,12 @@ static void test_sock_path(void)
     CHECK(cs370_sock_path(path, sizeof(path), "/run/x", CS370_HUB_SOCK) == 0);
     CHECK(strcmp(path, "/run/x/hub.sock") == 0);
 
+    /* Fits sun_path but not the caller's buffer. */
+    char tiny[8];
+    errno = 0;
+    CHECK(cs370_sock_path(tiny, sizeof(tiny), "/run/x", CS370_HUB_SOCK) == -1 &&
+          errno == ENAMETOOLONG);
+
     /* Fits PATH_MAX but not sun_path (108 bytes on Linux). */
     memset(longdir, 'a', sizeof(longdir) - 1);
     longdir[sizeof(longdir) - 1] = '\0';
@@ -120,7 +133,7 @@ static void test_round_trip(void)
     struct cs370_record in = sample(7), out;
     uint8_t big[CS370_RECORD_SIZE + 1], small[16];
 
-    join(path, "rt.sock");
+    join(path, sizeof(path), "rt.sock");
     int lfd = cs370_listen(path);
     CHECK(lfd >= 0);
     int cfd = cs370_connect(path);
@@ -131,6 +144,12 @@ static void test_round_trip(void)
         return;
 
     CHECK(cloexec(lfd) && cloexec(cfd) && cloexec(sfd));
+
+    /* Nothing pending on a nonblocking listener: EAGAIN, a routine result. */
+    int fl = fcntl(lfd, F_GETFL);
+    CHECK(fl >= 0 && fcntl(lfd, F_SETFL, fl | O_NONBLOCK) == 0);
+    errno = 0;
+    CHECK(cs370_accept(lfd) == -1 && (errno == EAGAIN || errno == EWOULDBLOCK));
 
     /* A record arrives byte for byte and still validates. */
     CHECK(cs370_send_record(cfd, &in) == 0);
@@ -169,10 +188,23 @@ static void test_round_trip(void)
         close(cfd);
     }
 
-    /* A second listen on the same path replaces the stale socket file. */
+    /* While the listener is live, a second listen refuses to take over its
+     * socket file, and the first listener keeps working. */
+    struct stat before, after;
+    CHECK(lstat(path, &before) == 0);
+    errno = 0;
+    CHECK(cs370_listen(path) == -1 && errno == EADDRINUSE);
+    CHECK(lstat(path, &after) == 0 && after.st_ino == before.st_ino);
+    cfd = cs370_connect(path);
+    CHECK(cfd >= 0);
+    if (cfd >= 0)
+        close(cfd);
+
+    /* Once it is gone, a new listen replaces the stale file with a new one. */
     close(lfd);
     lfd = cs370_listen(path);
     CHECK(lfd >= 0);
+    CHECK(lstat(path, &after) == 0 && S_ISSOCK(after.st_mode) && after.st_ino != before.st_ino);
     if (lfd >= 0)
         close(lfd);
     unlink(path);
@@ -183,7 +215,7 @@ static void test_connect_and_listen_errors(void)
     char path[PATH_MAX];
 
     /* Nobody listening yet. */
-    join(path, "nobody.sock");
+    join(path, sizeof(path), "nobody.sock");
     errno = 0;
     CHECK(cs370_connect(path) == -1 && errno == ENOENT);
 
@@ -197,7 +229,7 @@ static void test_connect_and_listen_errors(void)
     unlink(path);
 
     /* listen never deletes a file that is not a socket. */
-    join(path, "notasocket");
+    join(path, sizeof(path), "notasocket");
     FILE *f = fopen(path, "w");
     CHECK(f != NULL);
     if (f)
@@ -241,9 +273,9 @@ int main(void)
     test_connect_and_listen_errors();
     test_backoff();
 
-    join(path, "run");
+    join(path, sizeof(path), "run");
     rmdir(path);
-    join(path, "cs370");
+    join(path, sizeof(path), "cs370");
     rmdir(path);
     if (rmdir(base) != 0)
         perror("rmdir test dir");

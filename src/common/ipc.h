@@ -21,10 +21,15 @@
 #define CS370_HUB_SOCK   "hub.sock"
 #define CS370_STORE_SOCK "store.sock"
 
+/* Pending-connection queue for cs370_listen(); the hub has at most a few
+ * sensord clients and the store exactly one hub. */
+#define CS370_LISTEN_BACKLOG 8
+
 /* Writes the runtime dir into buf: $CS370_RUN_DIR if set, otherwise
  * $XDG_RUNTIME_DIR/cs370. Creates it (mode 0700) if it does not exist; the
- * parent must exist. Fails with ENOENT if neither variable is set and
- * ENOTDIR if the path exists but is not a directory. */
+ * parent must exist. Fails with ENOENT if neither variable is set, ENOTDIR
+ * if the path exists but is not a directory, and EACCES if the directory is
+ * not owned by this user or is group/other accessible. */
 int cs370_run_dir(char *buf, size_t len);
 
 /* Writes "<dir>/<name>" into buf. Fails with ENAMETOOLONG if the result
@@ -32,14 +37,15 @@ int cs370_run_dir(char *buf, size_t len);
 int cs370_sock_path(char *buf, size_t len, const char *dir, const char *name);
 
 /* Listening socket bound to path. A stale socket file left by a previous
- * run is removed first; any other kind of file at path fails with EEXIST. */
+ * run is removed first. Fails with EADDRINUSE if a live listener still
+ * answers on path, and EEXIST if a file that is not a socket is there. */
 int cs370_listen(const char *path);
 
 /* Accepts one connection. EAGAIN, EWOULDBLOCK and EINTR are not logged. */
 int cs370_accept(int lfd);
 
-/* Connects to path. ENOENT and ECONNREFUSED (peer not up yet) and EAGAIN
- * (peer's backlog full) are not logged. */
+/* Connects to path. ENOENT and ECONNREFUSED (peer not up yet), EAGAIN
+ * (peer's backlog full) and EINTR are not logged. */
 int cs370_connect(const char *path);
 
 /* Sends one record. EPIPE and ECONNRESET (peer gone), EAGAIN, EWOULDBLOCK
