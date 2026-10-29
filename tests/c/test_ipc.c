@@ -197,16 +197,32 @@ static void test_round_trip(void)
     CHECK(lstat(path, &after) == 0 && after.st_ino == before.st_ino);
     cfd = cs370_connect(path);
     CHECK(cfd >= 0);
+    sfd = cs370_accept(lfd);
+    CHECK(sfd >= 0);
+    if (sfd >= 0)
+        close(sfd);
     if (cfd >= 0)
         close(cfd);
 
-    /* Once it is gone, a new listen replaces the stale file with a new one. */
+    /* Once it is gone, a new listen replaces the stale file, and the path
+     * now reaches the new listener (a stale file would refuse the connect).
+     * Comparing inode numbers cannot show this: the filesystem may give the
+     * new file the number the unlinked one just freed. */
     close(lfd);
     lfd = cs370_listen(path);
     CHECK(lfd >= 0);
-    CHECK(lstat(path, &after) == 0 && S_ISSOCK(after.st_mode) && after.st_ino != before.st_ino);
-    if (lfd >= 0)
+    CHECK(lstat(path, &after) == 0 && S_ISSOCK(after.st_mode));
+    if (lfd >= 0) {
+        cfd = cs370_connect(path);
+        CHECK(cfd >= 0);
+        sfd = cs370_accept(lfd);
+        CHECK(sfd >= 0);
+        if (sfd >= 0)
+            close(sfd);
+        if (cfd >= 0)
+            close(cfd);
         close(lfd);
+    }
     unlink(path);
 }
 
