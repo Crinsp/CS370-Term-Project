@@ -4,3 +4,4 @@ __pycache__/
 VERSION
 build/
 build-asan/
+.DS_Store
