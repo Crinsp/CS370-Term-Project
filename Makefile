@@ -7,11 +7,20 @@ BUILD   := build
 COMMON  := src/common/crc32.c src/common/ipc.c
 HEADERS := $(wildcard src/common/*.h)
 BINS    := $(BUILD)/sensord $(BUILD)/hub $(BUILD)/store $(BUILD)/supervisor
-TESTS   := $(BUILD)/test_crc32 $(BUILD)/test_record $(BUILD)/test_ipc
+TESTS   := $(BUILD)/test_crc32 $(BUILD)/test_record $(BUILD)/test_ipc \
+           $(BUILD)/test_hub_queue $(BUILD)/test_hub
 
 .PHONY: all test asan clean
 
 all: $(BINS)
+
+# Per-binary extra sources; the pattern rules below compile every .c prerequisite.
+$(BUILD)/hub: src/hub/queue.c src/hub/queue.h
+$(BUILD)/test_hub_queue: src/hub/queue.c src/hub/queue.h
+$(BUILD)/test_hub_queue: CFLAGS += -Isrc/hub
+# test_hub runs the real hub binary.
+$(BUILD)/test_hub: $(BUILD)/hub
+$(BUILD)/test_hub: CFLAGS += -DHUB_BIN='"$(BUILD)/hub"'
 
 $(BUILD)/%: src/%/main.c $(COMMON) $(HEADERS) | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^)
