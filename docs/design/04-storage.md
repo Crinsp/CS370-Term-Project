@@ -19,7 +19,10 @@
 - Valid record (`cs370_record_valid()`, used by hub and store): CRC matches, `source < 2`, no undefined flag bits, `reserved` zero, `lux` finite and >= 0, and fields that do not apply to the source are zero.
 - SUSPECT bounds (targets **[Pi: unverified]**): DHT11 temperature outside 0-50 degC or RH outside 20-90 %, or a change of more than 5 degC or 20 %RH between consecutive samples; light outside 0-88000 lux or a jump not explained by a gain change.
 - Rate: 2 Hz light + 0.5 Hz DHT = 2.5 records/s; 32 B x 2.5 = 80 B/s, about 6.9 MB/day.
+- Data dir **[proposed]**: `$CS370_DATA_DIR`, default `~/.local/share/cs370/data` — never `/srv/cs370`, since that's the deployed release and gets overwritten on every deploy.
+- Segments **[proposed]**: `seg-<boot_id>-<index>.cs370`, a 32-byte header (magic, format version, boot_id, advisory boot wall-clock) followed by records. A new segment opens on every boot (fresh `boot_id`, index 0) and whenever the current one reaches 8 MiB (about a day at the design rate), bounding how much a torn write can cost.
+- Boot ordering **[proposed]**: `mono_ns` resets every reboot, so cross-boot order comes from a persisted counter, `<data_dir>/boot_id`, incremented on every start — not the wall clock, which can be wrong before NTP syncs.
 - Retention: 14 days (about 100 MB), rotated by segment file with the oldest deleted; the dashboard reads history from the log, not from memory.
-- Durability: `write` per record into a buffered segment, `fdatasync` every N records or 5 s, whichever comes first. The loss window is at most 5 s and will be reported as a measured number.
-- Power dies mid-write: on start, scan the tail segment, verify each CRC, and truncate at the first bad record.
+- Durability **[proposed]**: `write` per record into a buffered segment, `fdatasync` every 13 records or 5 s, whichever comes first. At the design rate the 5 s timer governs steady state (13 records takes ~5.2 s); the count only bounds a burst. The loss window is at most 5 s and will be reported as a measured number.
+- Power dies mid-write: on start, scan the tail segment (the previous boot's last one), verify each CRC, and truncate at the first bad record.
 - Replayed or synthetic records carry the FAKE flag, and the dashboard and logs label them.
