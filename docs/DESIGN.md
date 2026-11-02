@@ -100,9 +100,12 @@ Rule from CLAUDE.md: stale, dead or implausible data is shown as such, never as 
 - Valid record (`cs370_record_valid()`, used by hub and store): CRC matches, `source < 2`, no undefined flag bits, `reserved` is zero, `lux` is finite and >= 0, and fields that do not apply to the source (or any value field of a MISSING record) are zero. Anything else is rejected and logged.
 - SUSPECT bounds (targets, to confirm against Pi data **[PI]**): DHT11 temperature outside 0-50 degC or RH outside 20-90 %, or a change of more than 5 degC or 20 %RH between consecutive samples; light outside 0-88000 lux (TSL2591 range) or a jump that is not explained by gain change.
 - Rate: 2 Hz light + 0.5 Hz DHT = 2.5 records/s, 32 B x 2.5 = 80 B/s, about 6.9 MB/day.
+- Data dir: `$CS370_DATA_DIR`, default `~/.local/share/cs370/data` (never `/srv/cs370` — that's the deployed release, overwritten every deploy).
+- Segments: `seg-<boot_id>-<index>.cs370`, 32-byte header (magic, format version, boot_id, advisory boot wall-clock) followed by records. New segment every boot (fresh `boot_id`, index 0) and whenever the current one reaches 8 MiB (about a day at the design rate).
+- Boot ordering: `mono_ns` resets every reboot, so cross-boot order comes from a persisted monotonic counter (`<data_dir>/boot_id`), not the wall clock.
 - Retention: keep 14 days (about 100 MB at 80 B/s, small next to the Pi's 32 GB card), rotate by segment file and delete the oldest; the dashboard reads history from the log, not from memory.
-- Durability: `write` per record into a buffered segment, `fdatasync` every N records or 5 s, whichever is first; the loss window is at most 5 s and is recorded as a measured number in the evaluation.
-- Recovery: on start, scan the tail segment, verify CRC, truncate at the first bad record.
+- Durability: `write` per record into a buffered segment, `fdatasync` every 13 records or 5 s, whichever is first; at the design rate the 5 s timer governs steady state (13 records takes ~5.2 s) and the count is a burst backstop. The loss window is at most 5 s and is recorded as a measured number in the evaluation.
+- Recovery: on start, scan the tail segment (the previous boot's last one), verify CRC, truncate at the first bad record.
 - Replayed or synthetic records carry `flags=fake` and the dashboard and logs label them.
 
 ## 5. Constraints and substitutions
